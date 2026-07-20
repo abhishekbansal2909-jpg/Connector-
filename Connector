@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Request, Response
+from twilio.rest import Client
+import os
 
 app = FastAPI()
 
@@ -8,10 +10,25 @@ async def root():
 
 @app.post("/incoming-call")
 async def handle_incoming_call(request: Request):
-    # This XML tells Twilio to read a message aloud to the caller
+    # This is what Twilio reads when the call connects
     twiml_response = """<?xml version="1.0" encoding="UTF-8"?>
     <Response>
         <Say>Hello! Your AI voice agent is successfully connected to your server.</Say>
     </Response>
     """
     return Response(content=twiml_response, media_type="application/xml")
+
+@app.get("/trigger-call")
+async def trigger_call():
+    # 1. Grab your secret credentials from Render securely
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    client = Client(account_sid, auth_token)
+
+    # 2. Tell Twilio to call your Indian mobile number
+    call = client.calls.create(
+        to="+91XXXXXXXXXX", # <-- PUT YOUR VERIFIED CELL NUMBER HERE
+        from_="+17373850570", # Your Twilio Trial Number
+        url="https://YOUR-APP-NAME.onrender.com/incoming-call" # <-- PUT YOUR RENDER URL HERE
+    )
+    return {"message": f"Calling you now! Call ID: {call.sid}"}
