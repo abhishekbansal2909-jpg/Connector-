@@ -16,6 +16,7 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 MY_PHONE_NUMBER = os.getenv("MY_PHONE_NUMBER")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 # Initialize Groq Client
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -27,12 +28,54 @@ system_prompt = {
 }
 
 
-async def generate_groq_response(user_text: str):
-    """Sends the transcribed user text to Groq and prints the reply."""
+async def synthesize_and_stream_audio(text: str, twilio_ws: WebSocket, stream_sid: str):
+    """Sends text to ElevenLabs and streams the resulting audio back to Twilio."""
+    # Using 'Rachel' as the default voice ID
+    voice_id = "21m00Tcm4TlvDq8ikWAM" 
+    
+    # Request ulaw_8000 format directly so we don't have to transcode for Twilio
+    elevenlabs_ws_url = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_flash_v2_5&output_format=ulaw_8000"
+    
+    try:
+        async with websockets.connect(elevenlabs_ws_url) as elevenlabs_ws:
+            # 1. Send the initialization payload with your API key
+            init_payload = {
+                "text": " ",
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
+                "xi_api_key": ELEVENLABS_API_KEY
+            }
+            await elevenlabs_ws.send(json.dumps(init_payload))
+            
+            # 2. Send the actual AI text
+            await elevenlabs_ws.send(json.dumps({"text": text}))
+            
+            # 3. Send an empty string to tell ElevenLabs we are done sending text
+            await elevenlabs_ws.send(json.dumps({"text": ""}))
+            
+            # 4. Stream the returned audio back to Twilio
+            async for message in elevenlabs_ws:
+                data = json.loads(message)
+                if data.get("audio"):
+                    # ElevenLabs returns base64 strings, perfect for Twilio
+                    audio_payload = {
+                        "event": "media",
+                        "streamSid": stream_sid,
+                        "media": {
+                            "payload": data["audio"]
+                        }
+                    }
+                    await twilio_ws.send_text(json.dumps(audio_payload))
+                    
+    except Exception as e:
+        print(f"ElevenLabs TTS Error: {e}", flush=True)
+
+
+async def generate_groq_response(user_text: str, twilio_ws: WebSocket, stream_sid: str):
+    """Sends text to Groq, then passes the AI response to ElevenLabs to speak."""
     try:
         print(f"🧠 Thinking response for: '{user_text}'...", flush=True)
         
-        # Call Groq's high-speed Llama 3.3 model
+        # Call Groq's high-speed model
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -45,7 +88,9 @@ async def generate_groq_response(user_text: str):
         
         reply = completion.choices[0].message.content
         print(f"🤖 AI Response: {reply}", flush=True)
-        return reply
+        
+        # Immediately send text to ElevenLabs to speak it
+        await synthesize_and_stream_audio(reply, twilio_ws, stream_sid)
 
     except Exception as e:
         print(f"Groq API Error: {e}", flush=True)
@@ -89,6 +134,9 @@ async def handle_media_stream(websocket: WebSocket):
     
     deepgram_url = "wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1&model=nova-3&interim_results=true"
     
+    # Dictionary to hold dynamic call states like Twilio's streamSid
+    call_state = {"stream_sid": None}
+    
     try:
         async with websockets.connect(
             deepgram_url,
@@ -106,8 +154,15 @@ async def handle_media_stream(websocket: WebSocket):
                             if transcript.strip():
                                 if data.get("is_final"):
                                     print(f"✅ Final: {transcript}", flush=True)
-                                    # Trigger Groq brain when a final sentence is captured
-                                    asyncio.create_task(generate_groq_response(transcript))
+                                    # Ensure we have the stream SID before triggering the AI
+                                    if call_state["stream_sid"]:
+                                        asyncio.create_task(
+                                            generate_groq_response(
+                                                transcript, 
+                                                websocket, 
+                                                call_state["stream_sid"]
+                                            )
+                                        )
                                 else:
                                     print(f"⏳ Partial: {transcript}", flush=True)
                                     
@@ -121,7 +176,9 @@ async def handle_media_stream(websocket: WebSocket):
                 msg = json.loads(data)
                 
                 if msg.get("event") == "start":
-                    print("Twilio media stream started!", flush=True)
+                    # Capture the Twilio stream SID so we can talk back
+                    call_state["stream_sid"] = msg["start"]["streamSid"]
+                    print(f"Twilio media stream started! SID: {call_state['stream_sid']}", flush=True)
                 
                 elif msg.get("event") == "media":
                     payload = msg["media"]["payload"]
