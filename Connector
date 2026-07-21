@@ -1,4 +1,4 @@
-import os
+8import os
 import json
 import base64
 import asyncio
@@ -193,4 +193,5 @@ async def handle_media_stream(websocket: WebSocket):
         print("Twilio WebSocket disconnected.", flush=True)
     except Exception as e:
         print(f"Connection error: {e}", flush=True)
-    voice_id = "21m00Tcm4TlvDq8ikWAM" # Or whichever ID is currently here
+        voice_id = "pNInz6obpgDQGcFmaJgB"
+
