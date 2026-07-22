@@ -55,10 +55,8 @@ async def handle_ai_turn(user_text: str, twilio_ws: WebSocket, stream_sid: str, 
     try:
         print(f"🧠 Thinking response for: '{user_text}'...", flush=True)
         
-        # Add the user's latest speech to the memory
         call_history.append({"role": "user", "content": user_text})
         
-        # 1. Generate Text with Groq using the full history
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=call_history,
@@ -68,10 +66,8 @@ async def handle_ai_turn(user_text: str, twilio_ws: WebSocket, stream_sid: str, 
         reply = completion.choices[0].message.content
         print(f"🤖 AI Response: {reply}", flush=True)
         
-        # Add the AI's response to the memory
         call_history.append({"role": "assistant", "content": reply})
         
-        # 2. Stream Audio with ElevenLabs
         voice_id = "pNInz6obpgDQGcFmaJgB" 
         elevenlabs_ws_url = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_flash_v2_5&output_format=ulaw_8000"
         
@@ -94,6 +90,12 @@ async def handle_ai_turn(user_text: str, twilio_ws: WebSocket, stream_sid: str, 
                         "media": {"payload": data["audio"]}
                     }
                     await twilio_ws.send_text(json.dumps(audio_payload))
+                
+                # Catch and print silent ElevenLabs errors (like quota limits)
+                elif data.get("error"):
+                    print(f"⚠️ ElevenLabs Error: {data['error']}", flush=True)
+                elif data.get("message"):
+                    print(f"⚠️ ElevenLabs Message: {data['message']}", flush=True)
                     
     except asyncio.CancelledError:
         print("🛑 AI turn cancelled due to user barge-in.", flush=True)
@@ -136,13 +138,13 @@ async def handle_media_stream(websocket: WebSocket):
     await websocket.accept()
     print("Twilio WebSocket connection opened!", flush=True)
     
-    deepgram_url = "wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1&model=nova-3&interim_results=true"
+    # Added endpointing=500 so Deepgram doesn't cut you off mid-sentence
+    deepgram_url = "wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1&model=nova-3&interim_results=true&endpointing=500"
     
-    # We now track the active AI task AND the conversation history
     call_state = {
         "stream_sid": None, 
         "ai_task": None,
-        "history": [system_prompt] # Load the rules immediately
+        "history": [system_prompt] 
     }
     
     try:
@@ -160,7 +162,6 @@ async def handle_media_stream(websocket: WebSocket):
                             transcript = data.get("channel", {}).get("alternatives", [{}])[0].get("transcript", "")
                             
                             if transcript.strip():
-                                # --- BARGE-IN LOGIC ---
                                 if call_state["ai_task"] and not call_state["ai_task"].done():
                                     print("🛑 User interrupted! Clearing Twilio buffer...", flush=True)
                                     call_state["ai_task"].cancel()
@@ -172,11 +173,9 @@ async def handle_media_stream(websocket: WebSocket):
                                         }
                                         asyncio.create_task(websocket.send_text(json.dumps(clear_event)))
 
-                                # Normal Transcription Logging
                                 if data.get("is_final"):
                                     print(f"✅ Final: {transcript}", flush=True)
                                     if call_state["stream_sid"]:
-                                        # Start a new AI turn and pass the history
                                         call_state["ai_task"] = asyncio.create_task(
                                             handle_ai_turn(
                                                 transcript, 
@@ -200,6 +199,16 @@ async def handle_media_stream(websocket: WebSocket):
                 if msg.get("event") == "start":
                     call_state["stream_sid"] = msg["start"]["streamSid"]
                     print(f"Twilio media stream started! SID: {call_state['stream_sid']}", flush=True)
+                    
+                    # PROACTIVE GREETING: Trigger the AI to speak immediately when the phone is answered
+                    call_state["ai_task"] = asyncio.create_task(
+                        handle_ai_turn(
+                            "Hello!", 
+                            websocket, 
+                            call_state["stream_sid"],
+                            call_state["history"]
+                        )
+                    )
                 
                 elif msg.get("event") == "media":
                     payload = msg["media"]["payload"]
@@ -214,4 +223,3 @@ async def handle_media_stream(websocket: WebSocket):
         print("Twilio WebSocket disconnected.", flush=True)
     except Exception as e:
         print(f"Connection error: {e}", flush=True)
-        
