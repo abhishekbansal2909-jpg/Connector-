@@ -50,6 +50,36 @@ system_prompt = {
 }
 
 
+async def generate_post_call_summary(call_history: list):
+    """Analyzes the transcript and generates a JSON summary of CRM corrections."""
+    print("📝 Generating post-call CRM summary...", flush=True)
+    
+    # Filter out the original system prompt to save tokens, keep only the actual conversation
+    transcript = [msg for msg in call_history if msg["role"] != "system"]
+    
+    summary_instructions = {
+        "role": "system",
+        "content": """Analyze the following call transcript. Extract any CRM discrepancies discussed and output a JSON object containing a 'flags' array. 
+        Format example: {"flags": [{"field": "address", "old": "456 Oak Street", "new": "123 Main Street", "status": "user_confirmed"}]}
+        If no corrections were made, output {"flags": []}. You must output valid JSON only, with no markdown formatting or intro text."""
+    }
+    
+    try:
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[summary_instructions] + transcript,
+            temperature=0.1, # Low temperature for strictly factual data extraction
+            response_format={"type": "json_object"} # Forces Groq to return pure JSON
+        )
+        report = completion.choices[0].message.content
+        print("\n" + "="*50)
+        print("📊 FINAL CALL QA REPORT:")
+        print(report)
+        print("="*50 + "\n", flush=True)
+    except Exception as e:
+        print(f"Summary Error: {e}", flush=True)
+
+
 async def handle_ai_turn(user_text: str, twilio_ws: WebSocket, stream_sid: str, call_history: list):
     """Handles thinking (Groq) and speaking (ElevenLabs) using conversation history."""
     try:
@@ -91,7 +121,6 @@ async def handle_ai_turn(user_text: str, twilio_ws: WebSocket, stream_sid: str, 
                     }
                     await twilio_ws.send_text(json.dumps(audio_payload))
                 
-                # Catch and print silent ElevenLabs errors (like quota limits)
                 elif data.get("error"):
                     print(f"⚠️ ElevenLabs Error: {data['error']}", flush=True)
                 elif data.get("message"):
@@ -138,7 +167,6 @@ async def handle_media_stream(websocket: WebSocket):
     await websocket.accept()
     print("Twilio WebSocket connection opened!", flush=True)
     
-    # Added endpointing=500 so Deepgram doesn't cut you off mid-sentence
     deepgram_url = "wss://api.deepgram.com/v1/listen?encoding=mulaw&sample_rate=8000&channels=1&model=nova-3&interim_results=true&endpointing=500"
     
     call_state = {
@@ -163,15 +191,15 @@ async def handle_media_stream(websocket: WebSocket):
                             
                             if transcript.strip():
                                 if call_state["ai_task"] and not call_state["ai_task"].done():
-                                    print("🛑 User interrupted! Clearing Twilio buffer...", flush=True)
+                                    print("🛑 User interrupted! Cancelling Python task...", flush=True)
                                     call_state["ai_task"].cancel()
-                                    
-                                    if call_state["stream_sid"]:
-                                        clear_event = {
-                                            "event": "clear",
-                                            "streamSid": call_state["stream_sid"]
-                                        }
-                                        asyncio.create_task(websocket.send_text(json.dumps(clear_event)))
+                                
+                                if call_state["stream_sid"]:
+                                    clear_event = {
+                                        "event": "clear",
+                                        "streamSid": call_state["stream_sid"]
+                                    }
+                                    asyncio.create_task(websocket.send_text(json.dumps(clear_event)))
 
                                 if data.get("is_final"):
                                     print(f"✅ Final: {transcript}", flush=True)
@@ -190,7 +218,7 @@ async def handle_media_stream(websocket: WebSocket):
                 except Exception as e:
                     print(f"Deepgram listen error: {e}", flush=True)
                     
-            asyncio.create_task(listen_to_deepgram())
+            listen_task = asyncio.create_task(listen_to_deepgram())
             
             while True:
                 data = await websocket.receive_text()
@@ -200,15 +228,11 @@ async def handle_media_stream(websocket: WebSocket):
                     call_state["stream_sid"] = msg["start"]["streamSid"]
                     print(f"Twilio media stream started! SID: {call_state['stream_sid']}", flush=True)
                     
-                    # PROACTIVE GREETING: Trigger the AI to speak immediately when the phone is answered
-                    call_state["ai_task"] = asyncio.create_task(
-                        handle_ai_turn(
-                            "Hello!", 
-                            websocket, 
-                            call_state["stream_sid"],
-                            call_state["history"]
-                        )
-                    )
+                    async def delayed_greeting():
+                        await asyncio.sleep(2)
+                        await handle_ai_turn("Hello!", websocket, call_state["stream_sid"], call_state["history"])
+                        
+                    call_state["ai_task"] = asyncio.create_task(delayed_greeting())
                 
                 elif msg.get("event") == "media":
                     payload = msg["media"]["payload"]
@@ -217,6 +241,8 @@ async def handle_media_stream(websocket: WebSocket):
                 
                 elif msg.get("event") == "stop":
                     print("Twilio media stream stopped.", flush=True)
+                    # Trigger the final report generation when you hang up!
+                    asyncio.create_task(generate_post_call_summary(call_state["history"]))
                     break
                     
     except WebSocketDisconnect:
