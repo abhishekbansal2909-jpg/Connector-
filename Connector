@@ -1,119 +1,47 @@
-import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 import json
+import os
 
-# 1. FastAPI Setup
-app = FastAPI(title="Voice PM Orchestrator")
-
-class TwilioWebhook(BaseModel):
-    user_input: str
-    caller_number: str
-
-# 2. LangGraph State & Agent Setup
-class PMState(TypedDict):
-    messages: list
-    intent: str
-    project_data: dict
-    final_audio_text: str
-
-# Automatically pulls GROQ_API_KEY from your cloud environment variables
-llm = ChatGroq(model_name="llama-3.3-70b-versatile")
-
-def analyze_intent(state: PMState):
-    """Determines what the client/stakeholder is trying to do."""
-    last_message = state["messages"][-1].content
-    prompt = f"""
-    Analyze this message from a project stakeholder: "{last_message}"
-    Classify the intent as exactly one of these:
-    - STATUS_CHECK: Asking for timeline, progress, or risks.
-    - SCOPE_CHANGE: Asking to add a feature or change the baseline.
-    - GENERAL: General conversation.
-    Reply with ONLY the classification string.
-    """
-    response = llm.invoke([HumanMessage(content=prompt)])
-    return {"intent": response.content.strip()}
-
-def fetch_status(state: PMState):
-    """Simulates a cloud database check (like Airtable/Supabase)."""
-    mock_cloud_db = {
-        "project": "Voice Agent PM Build",
-        "phase": "API Integration",
-        "risk_status": "High - 2 days behind schedule due to rate limits."
-    }
-    return {"project_data": mock_cloud_db}
-
-def handle_scope_creep(state: PMState):
-    """Generates a strict, PMP-aligned response to scope changes."""
-    return {"final_audio_text": "I have logged that feature request. However, it is outside the current project baseline. I will flag this for the Project Manager to review."}
-
-def synthesize_report(state: PMState):
-    """Turns the database JSON into a conversational script."""
-    data = state["project_data"]
-    prompt = f"Turn this project data into a brief, professional 2-sentence spoken update: {json.dumps(data)}"
-    response = llm.invoke([HumanMessage(content=prompt)])
-    return {"final_audio_text": response.content}
-
-def route_intent(state: PMState):
-    if state["intent"] == "STATUS_CHECK":
-        return "fetch_status"
-    elif state["intent"] == "SCOPE_CHANGE":
-        return "handle_scope_creep"
-    return END
-
-# 3. Compile the Graph
-workflow = StateGraph(PMState)
-workflow.add_node("analyze_intent", analyze_intent)
-workflow.add_node("fetch_status", fetch_status)
-workflow.add_node("handle_scope_creep", handle_scope_creep)
-workflow.add_node("synthesize_report", synthesize_report)
-
-workflow.set_entry_point("analyze_intent")
-workflow.add_conditional_edges(
-    "analyze_intent", route_intent,
-    {"fetch_status": "fetch_status", "handle_scope_creep": "handle_scope_creep", END: END}
-)
-workflow.add_edge("fetch_status", "synthesize_report")
-workflow.add_edge("synthesize_report", END)
-workflow.add_edge("handle_scope_creep", END)
-
-pm_orchestrator = workflow.compile()
+# ... [Keep all your existing LangGraph setup, PMState, and nodes here exactly as they were] ...
 
 # 4. The Twilio Endpoint
 @app.post("/voice-intent")
-async def handle_voice_intent(webhook: TwilioWebhook):
+async def handle_voice_intent(request: Request):
     try:
-        # Run the incoming voice text through the LangGraph machine
-        result = pm_orchestrator.invoke({"messages": [HumanMessage(content=webhook.user_input)]})
+        # Twilio sends data as form-urlencoded, not JSON
+        form_data = await request.form()
         
-        # Return the synthesized response string for TTS
-        response_text = result.get('final_audio_text', 'I am not sure how to help with that.')
-        return {"response": response_text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/voice-intent")
-async def handle_voice_intent(webhook: TwilioWebhook):
-    try:
-        # Run the incoming voice text through the LangGraph machine
-        result = pm_orchestrator.invoke({"messages": [HumanMessage(content=webhook.user_input)]})
+        # 'SpeechResult' is the text Twilio recognized from the caller
+        user_input = form_data.get("SpeechResult")
         
-        # Get the response text
-        response_text = result.get('final_audio_text', 'I am not sure how to help with that.')
+        # Start building the TwiML XML response
+        twiml_response = '<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n'
         
-        # Wrap the response in valid TwiML XML
-        twiml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
-        <Response>
-            <Say>{response_text}</Say>
-        </Response>"""
+        if user_input:
+            # If the user spoke, route the text through the LangGraph machine
+            result = pm_orchestrator.invoke({"messages": [HumanMessage(content=user_input)]})
+            response_text = result.get('final_audio_text', 'I am not sure how to help with that.')
+            
+            # Add the AI's response to the TwiML
+            twiml_response += f'<Say>{response_text}</Say>\n'
+        else:
+            # If this is the start of the call, greet the user
+            twiml_response += '<Say>Project management orchestrator online. What is your request?</Say>\n'
         
-        # Return the XML with the correct content type
+        # Tell Twilio to listen for the user's next spoken command
+        twiml_response += '<Gather input="speech" action="/voice-intent" timeout="3" speechTimeout="auto"/>\n'
+        twiml_response += '</Response>'
+        
         return Response(content=twiml_response, media_type="application/xml")
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return a safe error message over the phone if something crashes
+        error_twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <Response><Say>System error: {str(e)}</Say></Response>"""
+        return Response(content=error_twiml, media_type="application/xml")
