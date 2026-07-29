@@ -95,3 +95,25 @@ async def handle_voice_intent(webhook: TwilioWebhook):
         return {"response": response_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/voice-intent")
+async def handle_voice_intent(webhook: TwilioWebhook):
+    try:
+        # Run the incoming voice text through the LangGraph machine
+        result = pm_orchestrator.invoke({"messages": [HumanMessage(content=webhook.user_input)]})
+        
+        # Get the response text
+        response_text = result.get('final_audio_text', 'I am not sure how to help with that.')
+        
+        # Wrap the response in valid TwiML XML
+        twiml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <Response>
+            <Say>{response_text}</Say>
+        </Response>"""
+        
+        # Return the XML with the correct content type
+        return Response(content=twiml_response, media_type="application/xml")
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
