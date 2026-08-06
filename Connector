@@ -4,13 +4,35 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 
-# 1. LOAD THE DATA
-url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
-df = pd.read_csv(url)
+# 1. LOAD THE MATCH DATA
+matches_url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
+matches_df = pd.read_csv(matches_url)
 
-rcb_matches = df[(df['team1'] == 'Royal Challengers Bangalore') | (df['team2'] == 'Royal Challengers Bangalore')].copy()
+# 2. LOAD THE BALL-BY-BALL DATA
+# This dataset contains every single delivery bowled in the tournament
+try:
+    deliveries_url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/deliveries.csv'
+    deliveries_df = pd.read_csv(deliveries_url)
+except:
+    # Public mirror fallback if the primary repository link is unavailable
+    deliveries_url = 'https://media.githubusercontent.com/media/shubh24/indian-premier-league/master/deliveries.csv'
+    deliveries_df = pd.read_csv(deliveries_url)
 
-# 2. DATA CLEANING & FEATURE ENGINEERING
+# --- THE NEW ENHANCEMENT: THE KOHLI FACTOR ---
+
+# Filter for only the balls faced by Virat Kohli
+kohli_balls = deliveries_df[deliveries_df['batsman'] == 'V Kohli']
+
+# Group by match_id and sum the batsman_runs to get his total score per match
+kohli_match_scores = kohli_balls.groupby('match_id')['batsman_runs'].sum().reset_index()
+
+# Create our binary feature: 1 if he scored 30 or more, 0 otherwise
+kohli_match_scores['kohli_30_plus'] = (kohli_match_scores['batsman_runs'] >= 30).astype(int)
+
+# ---------------------------------------------
+
+# 3. MERGE AND CLEAN THE DATA
+rcb_matches = matches_df[(matches_df['team1'] == 'Royal Challengers Bangalore') | (matches_df['team2'] == 'Royal Challengers Bangalore')].copy()
 rcb_matches = rcb_matches.dropna(subset=['winner'])
 rcb_matches['rcb_win'] = (rcb_matches['winner'] == 'Royal Challengers Bangalore').astype(int)
 
@@ -19,34 +41,29 @@ rcb_matches['opponent'] = np.where(rcb_matches['team1'] == 'Royal Challengers Ba
                                    rcb_matches['team1'])
 rcb_matches['rcb_won_toss'] = (rcb_matches['toss_winner'] == 'Royal Challengers Bangalore').astype(int)
 
-# Recent Form 
-rcb_matches['date'] = pd.to_datetime(rcb_matches['date'])
-rcb_matches = rcb_matches.sort_values('date')
-rcb_matches['recent_form'] = rcb_matches['rcb_win'].shift(1).rolling(window=3).sum().fillna(0)
+# Merge the Kohli feature into our matches dataset using the match ID
+rcb_matches = pd.merge(rcb_matches, kohli_match_scores[['match_id', 'kohli_30_plus']], left_on='id', right_on='match_id', how='left')
 
-# --- THE NEW ENHANCEMENT: HOME ADVANTAGE ---
-# Check if the city is Bangalore/Bengaluru. If yes, 1. If no, 0.
-rcb_matches['is_home_match'] = rcb_matches['city'].isin(['Bangalore', 'Bengaluru']).astype(int)
-# -------------------------------------------
+# If Virat didn't bat in a specific match, fill the empty value with 0
+rcb_matches['kohli_30_plus'] = rcb_matches['kohli_30_plus'].fillna(0)
 
-# Update our features list to include the new 'is_home_match' column
-features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city', 'recent_form', 'is_home_match']
+# Select the newly upgraded features
+features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city', 'kohli_30_plus']
 X = rcb_matches[features].copy().dropna()
 y = rcb_matches.loc[X.index, 'rcb_win']
 
-# 3. TRANSLATE TEXT TO MATH
+# 4. TRANSLATE TEXT TO MATH
 X_encoded = pd.get_dummies(X, columns=['opponent', 'toss_decision', 'city'])
 
-# 4. TRAIN THE RANDOM FOREST
+# 5. TRAIN AND EVALUATE
 X_train, X_test, y_train, y_test = train_test_split(X_encoded, y, test_size=0.2, random_state=42)
 
 model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
 model.fit(X_train, y_train)
 
-# 5. EVALUATE
 predictions = model.predict(X_test)
 
-print("--- RCB Predictor: Home Advantage Added ---")
+print("--- RCB Predictor: The Kohli Factor Added ---")
 print(f"Accuracy Score: {accuracy_score(y_test, predictions) * 100:.2f}%\n")
 print("Detailed Report:")
 print(classification_report(y_test, predictions))
