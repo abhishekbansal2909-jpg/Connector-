@@ -1,83 +1,20 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from prophet import Prophet
-from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
+from prophet.plot import plot_plotly, plot_components_plotly
 
-# 1. PULL AND CLEAN THE DATA
-ticker_symbol = 'RICOAUTO.NS'
-rico_data = yf.download(ticker_symbol, period='5y', interval='1d')
-rico_data.reset_index(inplace=True)
+# Generate the interactive Prophet forecast chart
+fig = plot_plotly(prophet_model, forecast)
 
-df = rico_data[['Date', 'Close']].copy()
-df.columns = ['ds', 'y'] 
-# Prophet requires dates to be timezone-naive
-df['ds'] = pd.to_datetime(df['ds']).dt.tz_localize(None)
-df.dropna(inplace=True)
+# Enhance the visual layout for readability
+fig.update_layout(
+    title=dict(
+        text='Rico Auto (RICOAUTO.NS) - Interactive Forecast',
+        x=0.5,
+        font=dict(size=18)
+    ),
+    xaxis_title='Date',
+    yaxis_title='Stock Price (INR)',
+    hovermode='x unified', # Groups the hover data together on a single vertical line
+    template='plotly_white'
+)
 
-# 2. TRAIN/TEST SPLIT FOR MATHEMATICAL ACCURACY
-# We hold out the last 30 trading days to test the model
-train_df = df.iloc[:-30].copy()
-test_df = df.iloc[-30:].copy()
-
-# 3. TRAIN THE PROPHET MODEL
-# We enable yearly seasonality to catch macro market cycles
-prophet_model = Prophet(daily_seasonality=False, yearly_seasonality=True)
-prophet_model.fit(train_df)
-
-# Forecast through the end of our test period
-future_dates = prophet_model.make_future_dataframe(periods=30)
-forecast = prophet_model.predict(future_dates)
-
-# 4. CALCULATE ACCURACY METRICS (RMSE & MAPE)
-# Align the predictions with the exact test dates
-predictions = forecast.iloc[-30:]['yhat'].values
-actuals = test_df['y'].values
-
-mape = mean_absolute_percentage_error(actuals, predictions) * 100
-rmse = np.sqrt(mean_squared_error(actuals, predictions))
-
-print("--- Prophet Model Backtesting Results ---")
-print(f"MAPE (Mean Absolute Percentage Error): {mape:.2f}%")
-print(f"RMSE (Root Mean Squared Error): {rmse:.2f} INR\n")
-print(f"(Note: A MAPE of {mape:.2f}% means the model's predictions were, on average, within {mape:.2f}% of the actual historical price.)\n")
-
-# 5. HIGH-READABILITY VISUALIZATION
-# Use a cleaner stylistic grid
-plt.style.use('seaborn-v0_8-darkgrid')
-fig, ax = plt.subplots(figsize=(16, 8))
-
-# Plot Actual Historical Data
-ax.plot(df['ds'], df['y'], label='Actual Historical Price', color='#1f77b4', linewidth=2, alpha=0.8)
-
-# Plot Prophet's Forecasted Trend
-ax.plot(forecast['ds'], forecast['yhat'], label='Prophet Trend Forecast', color='#2ca02c', linewidth=2.5, linestyle='--')
-
-# Add Confidence Intervals (The shaded green area)
-ax.fill_between(forecast['ds'], forecast['yhat_lower'], forecast['yhat_upper'], color='#2ca02c', alpha=0.2, label='80% Confidence Interval')
-
-# Highlight the exact moment the "Test Period" begins
-ax.axvline(x=test_df['ds'].iloc[0], color='red', linestyle=':', linewidth=2, label='Backtest Start (Last 30 Days)')
-
-# Formatting & Detail Enhancements
-ax.set_title('Rico Auto (RICOAUTO.NS) - Prophet Backtest & Forecast', fontsize=18, fontweight='bold', pad=15)
-ax.set_xlabel('Date', fontsize=14, labelpad=10)
-ax.set_ylabel('Stock Price (INR)', fontsize=14, labelpad=10)
-ax.tick_params(axis='both', which='major', labelsize=12)
-
-# Clean up the X-axis dates
-ax.xaxis.set_major_locator(mdates.YearLocator())
-ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
-
-# Legend positioning
-ax.legend(loc='upper left', fontsize=12, frameon=True, shadow=True)
-plt.tight_layout()
-plt.show()
-
-# 6. COMPONENT BREAKDOWN (The "Why")
-# This plots the isolated trend, weekly cycles, and yearly seasonality
-print("\n--- Generating Component Breakdown Charts ---")
-fig2 = prophet_model.plot_components(forecast)
-plt.show()
+# Display the interactive chart
+fig.show()
