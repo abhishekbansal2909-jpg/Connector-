@@ -1,38 +1,58 @@
-import yfinance as yf
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+from statsmodels.tsa.arima.model import ARIMA
+from prophet import Prophet
 
-# 1. PULL THE HISTORICAL DATA
-ticker_symbol = 'RICOAUTO.NS'
-print(f"Downloading data for {ticker_symbol}...")
+# ==========================================================
+# 1. ARIMA FORECASTING
+# ==========================================================
+arima_data = df.copy()
+arima_data['Date'] = pd.to_datetime(arima_data['Date'])
+arima_data.set_index('Date', inplace=True)
 
-# Fetch the last 5 years of daily stock data
-rico_data = yf.download(ticker_symbol, period='5y', interval='1d')
+# Order parameters (p=5, d=1, q=0)
+# p: uses last 5 days of lags | d: 1st order differencing | q: 0 moving average lags
+arima_model = ARIMA(arima_data['Price'], order=(5, 1, 0))
+arima_fit = arima_model.fit()
 
-# 2. CLEAN AND PREPARE THE DATA
-# Reset the index so 'Date' becomes a standard column
-rico_data.reset_index(inplace=True)
+# Forecast 30 business days ahead
+arima_forecast_vals = arima_fit.forecast(steps=30)
+last_date = arima_data.index[-1]
+future_arima_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=30, freq='B')
 
-# Use 'Close' instead of 'Adj Close' because yfinance now auto-adjusts by default
-df = rico_data[['Date', 'Close']].copy()
-df.columns = ['Date', 'Price'] # Rename for simplicity
+# ==========================================================
+# 2. PROPHET FORECASTING
+# ==========================================================
+# Prophet requires strict column names: 'ds' for dates, 'y' for values
+prophet_data = df[['Date', 'Price']].rename(columns={'Date': 'ds', 'Price': 'y'})
+prophet_data['ds'] = pd.to_datetime(prophet_data['ds']).dt.tz_localize(None)
 
-# Remove any empty rows where trading might have been halted
-df.dropna(inplace=True)
+# Initialize Prophet model with yearly seasonality enabled
+prophet_model = Prophet(daily_seasonality=False, yearly_seasonality=True)
+prophet_model.fit(prophet_data)
 
-print("\n--- First 5 Rows of Rico Auto Data ---")
-print(df.head())
+# Create future dates dataframe for 30 calendar days ahead
+future_dates = prophet_model.make_future_dataframe(periods=30)
+prophet_forecast = prophet_model.predict(future_dates)
 
-# 3. EXPLORATORY DATA ANALYSIS (EDA) - VISUALIZATION
-# Calculate a 50-day moving average to smooth out the daily noise and see the true trend
-df['50_Day_MA'] = df['Price'].rolling(window=50).mean()
-
-# Plot the actual price vs the moving average
+# ==========================================================
+# 3. VISUALIZATION & SIDE-BY-SIDE COMPARISON
+# ==========================================================
 plt.figure(figsize=(14, 7))
-plt.plot(df['Date'], df['Price'], label='Actual Adjusted Close Price', color='blue', alpha=0.6)
-plt.plot(df['Date'], df['50_Day_MA'], label='50-Day Moving Average', color='red', linewidth=2)
 
-plt.title('Rico Auto (RICOAUTO.NS) - 5 Year Historical Price', fontsize=16)
+# Plot last 150 trading days for clear historical context
+recent_df = df.tail(150)
+plt.plot(pd.to_datetime(recent_df['Date']), recent_df['Price'], label='Actual Historical Price', color='black', lw=2)
+
+# Plot ARIMA 30-Day Projection
+plt.plot(future_arima_dates, arima_forecast_vals, label='ARIMA 30-Day Forecast', color='orange', linestyle='--', lw=2.5)
+
+# Plot Prophet 30-Day Projection
+prophet_future = prophet_forecast.tail(30)
+plt.plot(prophet_future['ds'], prophet_future['yhat'], label='Prophet 30-Day Forecast', color='green', linestyle='--', lw=2.5)
+
+plt.title('Rico Auto (RICOAUTO.NS) - ARIMA vs Prophet 30-Day Forecast', fontsize=16)
 plt.xlabel('Date', fontsize=12)
 plt.ylabel('Stock Price (INR)', fontsize=12)
 plt.legend()
