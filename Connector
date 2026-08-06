@@ -13,9 +13,8 @@ rico_data = yf.download(ticker_symbol, period='5y', interval='1d')
 # Reset the index so 'Date' becomes a standard column
 rico_data.reset_index(inplace=True)
 
-# Keep only the essential columns: Date and Adjusted Close price
-# Adjusted Close is better than Close because it accounts for stock splits and dividends
-df = rico_data[['Date', 'Adj Close']].copy()
+# Use 'Close' instead of 'Adj Close' because yfinance now auto-adjusts by default
+df = rico_data[['Date', 'Close']].copy()
 df.columns = ['Date', 'Price'] # Rename for simplicity
 
 # Remove any empty rows where trading might have been halted
