@@ -1,30 +1,34 @@
+import pandas as pd
 from transformers import pipeline
 
-print("Downloading and loading the German NLP model... (This might take a minute)")
+# 1. LOAD THE BULK DATA
+# Simulating a large dataset of German product reviews
+data = {
+    'Review': [
+        "Die Qualität ist hervorragend und der Versand war sehr schnell.",
+        "Leider ging das Gerät nach zwei Tagen kaputt. Keine Empfehlung.",
+        "Das Produkt macht, was es soll, ist aber etwas zu teuer.",
+        "Ein absolutes Meisterwerk! Ich bin begeistert.",
+        "Schlechter Kundenservice, niemand antwortet auf meine E-Mails."
+    ]
+}
+df = pd.DataFrame(data)
 
-# 1. INITIALIZE THE PIPELINE
-# We are pulling a specific BERT model trained exclusively on German text
+# 2. INITIALIZE THE NLP PIPELINE
+print("Loading the German sentiment model...")
 nlp_classifier = pipeline("sentiment-analysis", model="oliverguhr/german-sentiment-bert")
 
-# 2. CREATE OUR TEST DATA
-# Let's feed the algorithm a mix of distinct sentiments
-german_reviews = [
-    "Das Produkt ist absolut fantastisch und funktioniert einwandfrei!", # Clear Positive
-    "Ich bin sehr enttäuscht, die Lieferung war extrem spät und der Kundenservice unfreundlich.", # Clear Negative
-    "Es ist in Ordnung, erfüllt seinen Zweck, aber nichts Besonderes." # Neutral/Mixed
-]
+# 3. PROCESS THE DATAFRAME IN BULK
+print("Analyzing sentiment across all reviews...")
+# Apply the model to each text in the 'Review' column
+df['Raw_Result'] = df['Review'].apply(lambda text: nlp_classifier(text)[0])
 
-print("\n--- NLP Sentiment Analysis Results ---\n")
+# Extract the label and percentage score into their own clean columns
+df['Sentiment'] = df['Raw_Result'].apply(lambda res: res['label'].upper())
+df['Confidence (%)'] = df['Raw_Result'].apply(lambda res: round(res['score'] * 100, 2))
 
-# 3. RUN THE PREDICTIONS
-predictions = nlp_classifier(german_reviews)
+# Drop the raw dictionary column for a clean final table
+df = df.drop(columns=['Raw_Result'])
 
-# 4. DISPLAY THE OUTPUT
-for review, prediction in zip(german_reviews, predictions):
-    # Format the score to a readable percentage
-    confidence_score = prediction['score'] * 100
-    sentiment_label = prediction['label']
-    
-    print(f"Text: '{review}'")
-    print(f"Detected Sentiment: {sentiment_label.upper()}")
-    print(f"Algorithm Confidence: {confidence_score:.2f}%\n")
+print("\n--- Bulk Sentiment Analysis Complete ---\n")
+print(df.to_string(index=False))
