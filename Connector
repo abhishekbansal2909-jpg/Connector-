@@ -1,40 +1,30 @@
-import yfinance as yf
-import pandas as pd
-from prophet import Prophet
-from prophet.plot import plot_plotly
+from transformers import pipeline
 
-# 1. DOWNLOAD THE COMPLETE HISTORICAL DATA
-ticker_symbol = 'RICOAUTO.NS'
-rico_data = yf.download(ticker_symbol, period='5y', interval='1d')
-rico_data.reset_index(inplace=True)
+print("Downloading and loading the German NLP model... (This might take a minute)")
 
-df = rico_data[['Date', 'Close']].copy()
-df.columns = ['ds', 'y'] 
-df['ds'] = pd.to_datetime(df['ds']).dt.tz_localize(None)
-df.dropna(inplace=True)
+# 1. INITIALIZE THE PIPELINE
+# We are pulling a specific BERT model trained exclusively on German text
+nlp_classifier = pipeline("sentiment-analysis", model="oliverguhr/german-sentiment-bert")
 
-# 2. TRAIN PROPHET ON THE FULL DATASET (No split)
-full_model = Prophet(daily_seasonality=False, yearly_seasonality=True)
-full_model.fit(df)
+# 2. CREATE OUR TEST DATA
+# Let's feed the algorithm a mix of distinct sentiments
+german_reviews = [
+    "Das Produkt ist absolut fantastisch und funktioniert einwandfrei!", # Clear Positive
+    "Ich bin sehr enttäuscht, die Lieferung war extrem spät und der Kundenservice unfreundlich.", # Clear Negative
+    "Es ist in Ordnung, erfüllt seinen Zweck, aber nichts Besonderes." # Neutral/Mixed
+]
 
-# 3. PROJECT 90 DAYS INTO THE ACTUAL FUTURE
-# This extends the timeline past the current date into late 2026
-future_dates = full_model.make_future_dataframe(periods=90)
-forecast_future = full_model.predict(future_dates)
+print("\n--- NLP Sentiment Analysis Results ---\n")
 
-# 4. RENDER INTERACTIVE PLOTLY CHART
-fig = plot_plotly(full_model, forecast_future)
+# 3. RUN THE PREDICTIONS
+predictions = nlp_classifier(german_reviews)
 
-fig.update_layout(
-    title=dict(
-        text='Rico Auto (RICOAUTO.NS) - 90-Day Future Forecast',
-        x=0.5,
-        font=dict(size=18)
-    ),
-    xaxis_title='Date',
-    yaxis_title='Stock Price (INR)',
-    hovermode='x unified',
-    template='plotly_white'
-)
-
-fig.show()
+# 4. DISPLAY THE OUTPUT
+for review, prediction in zip(german_reviews, predictions):
+    # Format the score to a readable percentage
+    confidence_score = prediction['score'] * 100
+    sentiment_label = prediction['label']
+    
+    print(f"Text: '{review}'")
+    print(f"Detected Sentiment: {sentiment_label.upper()}")
+    print(f"Algorithm Confidence: {confidence_score:.2f}%\n")
