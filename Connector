@@ -19,21 +19,18 @@ rcb_matches['opponent'] = np.where(rcb_matches['team1'] == 'Royal Challengers Ba
                                    rcb_matches['team1'])
 rcb_matches['rcb_won_toss'] = (rcb_matches['toss_winner'] == 'Royal Challengers Bangalore').astype(int)
 
-# --- THE ENHANCEMENT: RECENT FORM ---
-# Sort chronologically so the streak makes sense
+# Recent Form 
 rcb_matches['date'] = pd.to_datetime(rcb_matches['date'])
 rcb_matches = rcb_matches.sort_values('date')
+rcb_matches['recent_form'] = rcb_matches['rcb_win'].shift(1).rolling(window=3).sum().fillna(0)
 
-# Calculate how many of the previous 3 matches RCB won
-# We use shift(1) so it calculates the streak BEFORE the current match starts
-rcb_matches['recent_form'] = rcb_matches['rcb_win'].shift(1).rolling(window=3).sum()
+# --- THE NEW ENHANCEMENT: HOME ADVANTAGE ---
+# Check if the city is Bangalore/Bengaluru. If yes, 1. If no, 0.
+rcb_matches['is_home_match'] = rcb_matches['city'].isin(['Bangalore', 'Bengaluru']).astype(int)
+# -------------------------------------------
 
-# The first 3 matches ever played won't have enough history, so we fill those blanks with 0
-rcb_matches['recent_form'] = rcb_matches['recent_form'].fillna(0)
-# ------------------------------------
-
-# Select our newly upgraded features
-features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city', 'recent_form']
+# Update our features list to include the new 'is_home_match' column
+features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city', 'recent_form', 'is_home_match']
 X = rcb_matches[features].copy().dropna()
 y = rcb_matches.loc[X.index, 'rcb_win']
 
@@ -49,7 +46,7 @@ model.fit(X_train, y_train)
 # 5. EVALUATE
 predictions = model.predict(X_test)
 
-print("--- Upgraded RCB Match Predictor ---")
+print("--- RCB Predictor: Home Advantage Added ---")
 print(f"Accuracy Score: {accuracy_score(y_test, predictions) * 100:.2f}%\n")
 print("Detailed Report:")
 print(classification_report(y_test, predictions))
