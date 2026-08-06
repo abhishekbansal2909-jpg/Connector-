@@ -1,17 +1,56 @@
-import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
 
-# 1. Bypass the firewall by having Google's servers pull the CSV directly from a GitHub mirror
-url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
-df = pd.read_csv(url)
+# --- 1. DATA CLEANING & FEATURE ENGINEERING ---
 
-# 2. Let's verify the data loaded successfully
-print("Data loaded successfully!")
-print(f"Total historical matches downloaded: {df.shape[0]}")
+# Drop any matches that were abandoned (no winner)
+df_clean = rcb_matches.dropna(subset=['winner']).copy()
 
-# 3. Filter the dataset to ONLY include matches where RCB was playing
-rcb_matches = df[(df['team1'] == 'Royal Challengers Bangalore') | (df['team2'] == 'Royal Challengers Bangalore')]
+# Create our Target (y): 1 if RCB won, 0 if they lost
+df_clean['rcb_win'] = (df_clean['winner'] == 'Royal Challengers Bangalore').astype(int)
 
-print(f"Total RCB matches found: {rcb_matches.shape[0]}")
+# Engineer an 'Opponent' column (if team1 is RCB, opponent is team2, and vice versa)
+df_clean['opponent'] = np.where(df_clean['team1'] == 'Royal Challengers Bangalore', 
+                                df_clean['team2'], 
+                                df_clean['team1'])
 
-# 4. Preview the first 5 rows to see what raw data looks like before we engineer it
-rcb_matches.head()
+# Did RCB win the toss? (1 for Yes, 0 for No)
+df_clean['rcb_won_toss'] = (df_clean['toss_winner'] == 'Royal Challengers Bangalore').astype(int)
+
+# Select the features we want our AI to learn from
+features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city']
+X = df_clean[features].copy()
+
+# Drop any rows where city might be missing (data cleaning)
+X = X.dropna() 
+y = df_clean.loc[X.index, 'rcb_win'] # Ensure our target aligns with our cleaned features
+
+# --- 2. TRANSLATING TEXT TO MATH ---
+
+# The algorithm can't read "Chennai Super Kings" or "bat". 
+# pd.get_dummies converts these text categories into binary columns (0s and 1s)
+X_encoded = pd.get_dummies(X, columns=['opponent', 'toss_decision', 'city'])
+
+
+# --- 3. TRAINING THE RANDOM FOREST ---
+
+# Split into 80% training data, 20% testing data
+X_train, X_test, y_train, y_test = train_test_split(X_encoded, y, test_size=0.2, random_state=42)
+
+# Initialize 100 decision trees
+model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
+
+# Train the model!
+model.fit(X_train, y_train)
+
+
+# --- 4. EVALUATION ---
+
+predictions = model.predict(X_test)
+
+print("--- RCB Match Predictor Evaluated ---")
+print(f"Accuracy Score: {accuracy_score(y_test, predictions) * 100:.2f}%\n")
+print("Detailed Report:")
+print(classification_report(y_test, predictions))
