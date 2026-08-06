@@ -1,65 +1,41 @@
+import yfinance as yf
 import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split, GridSearchCV
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, classification_report
+import matplotlib.pyplot as plt
 
-# 1. LOAD THE FULL DATASET (No Filters)
-matches_url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
-matches_df = pd.read_csv(matches_url)
+# 1. PULL THE HISTORICAL DATA
+ticker_symbol = 'RICOAUTO.NS'
+print(f"Downloading data for {ticker_symbol}...")
 
-# Clean out abandoned matches 
-matches_df = matches_df.dropna(subset=['winner']).copy()
+# Fetch the last 5 years of daily stock data
+rico_data = yf.download(ticker_symbol, period='5y', interval='1d')
 
-# 2. GLOBAL FEATURE ENGINEERING 
-# Target: Did Team 1 win? (1 for Yes, 0 for No)
-matches_df['team1_win'] = (matches_df['winner'] == matches_df['team1']).astype(int)
+# 2. CLEAN AND PREPARE THE DATA
+# Reset the index so 'Date' becomes a standard column
+rico_data.reset_index(inplace=True)
 
-# Toss Impact: Is Team 1 chasing?
-matches_df['team1_chasing'] = np.where(
-    ((matches_df['toss_winner'] == matches_df['team1']) & (matches_df['toss_decision'] == 'field')) |
-    ((matches_df['toss_winner'] == matches_df['team2']) & (matches_df['toss_decision'] == 'bat')),
-    1, 0
-)
+# Keep only the essential columns: Date and Adjusted Close price
+# Adjusted Close is better than Close because it accounts for stock splits and dividends
+df = rico_data[['Date', 'Adj Close']].copy()
+df.columns = ['Date', 'Price'] # Rename for simplicity
 
-# Global Head-to-Head Win Rate
-matches_df['date'] = pd.to_datetime(matches_df['date'])
-matches_df = matches_df.sort_values('date')
+# Remove any empty rows where trading might have been halted
+df.dropna(inplace=True)
 
-# Create a unique matchup identifier (e.g., "Chennai Super Kings vs Mumbai Indians")
-matches_df['matchup'] = matches_df.apply(lambda row: "-".join(sorted([row['team1'], row['team2']])), axis=1)
+print("\n--- First 5 Rows of Rico Auto Data ---")
+print(df.head())
 
-# Calculate cumulative wins for Team 1 against Team 2 globally
-matches_df['wins_vs_opponent'] = matches_df.groupby('matchup')['team1_win'].cumsum().shift(1).fillna(0)
-matches_df['matches_vs_opponent'] = matches_df.groupby('matchup').cumcount()
-matches_df['h2h_win_rate'] = matches_df['wins_vs_opponent'] / matches_df['matches_vs_opponent'].replace(0, 1)
+# 3. EXPLORATORY DATA ANALYSIS (EDA) - VISUALIZATION
+# Calculate a 50-day moving average to smooth out the daily noise and see the true trend
+df['50_Day_MA'] = df['Price'].rolling(window=50).mean()
 
-# Select Streamlined Global Features
-features = ['team1_chasing', 'h2h_win_rate']
-X = matches_df[features].copy()
-y = matches_df['team1_win']
+# Plot the actual price vs the moving average
+plt.figure(figsize=(14, 7))
+plt.plot(df['Date'], df['Price'], label='Actual Adjusted Close Price', color='blue', alpha=0.6)
+plt.plot(df['Date'], df['50_Day_MA'], label='50-Day Moving Average', color='red', linewidth=2)
 
-# 3. TRAIN WITH XGBOOST ON ALL IPL HISTORY
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-param_grid = {
-    'max_depth': [2, 3, 4, 5],
-    'learning_rate': [0.01, 0.05, 0.1, 0.2],
-    'n_estimators': [50, 100, 200]
-}
-
-base_model = XGBClassifier(random_state=42)
-grid_search = GridSearchCV(estimator=base_model, param_grid=param_grid, cv=5, scoring='accuracy', n_jobs=-1)
-
-print("Starting Global Grid Search across all IPL matches...")
-grid_search.fit(X_train, y_train)
-
-best_model = grid_search.best_estimator_
-predictions = best_model.predict(X_test)
-
-# 4. EVALUATE
-print("\n--- Global IPL Predictor Optimized ---")
-print(f"The Best Hyperparameters Found: {grid_search.best_params_}")
-print(f"\nFinal Optimized Accuracy Score: {accuracy_score(y_test, predictions) * 100:.2f}%\n")
-print("Detailed Report:")
-print(classification_report(y_test, predictions))
+plt.title('Rico Auto (RICOAUTO.NS) - 5 Year Historical Price', fontsize=16)
+plt.xlabel('Date', fontsize=12)
+plt.ylabel('Stock Price (INR)', fontsize=12)
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.show()
