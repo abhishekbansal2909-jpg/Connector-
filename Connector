@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, classification_report
 
 # 1. LOAD THE MATCH DATA
@@ -12,21 +12,13 @@ matches_df = pd.read_csv(matches_url)
 deliveries_url = 'https://raw.githubusercontent.com/genieincodebottle/generative-ai/main/docs/ipl-dataset/deliveries.csv'
 deliveries_df = pd.read_csv(deliveries_url)
 
-# --- THE KOHLI FACTOR (FIXED KEYERROR) ---
-# Dynamically handle the column name change in newer datasets
+# --- THE KOHLI FACTOR ---
 batter_col = 'batter' if 'batter' in deliveries_df.columns else 'batsman'
-
-# Filter for only the balls faced by Virat Kohli
 kohli_balls = deliveries_df[deliveries_df[batter_col] == 'V Kohli']
-
-# Group by match_id and sum the runs to get his total score per match
 kohli_match_scores = kohli_balls.groupby('match_id')['batsman_runs'].sum().reset_index()
-
-# Create our binary feature: 1 if he scored 30 or more, 0 otherwise
 kohli_match_scores['kohli_30_plus'] = (kohli_match_scores['batsman_runs'] >= 30).astype(int)
-# -----------------------------------------
 
-# 3. MERGE AND CLEAN THE DATA
+# 3. MERGE AND CLEAN THE BASE DATA
 rcb_matches = matches_df[(matches_df['team1'] == 'Royal Challengers Bangalore') | (matches_df['team2'] == 'Royal Challengers Bangalore')].copy()
 rcb_matches = rcb_matches.dropna(subset=['winner'])
 rcb_matches['rcb_win'] = (rcb_matches['winner'] == 'Royal Challengers Bangalore').astype(int)
@@ -36,29 +28,43 @@ rcb_matches['opponent'] = np.where(rcb_matches['team1'] == 'Royal Challengers Ba
                                    rcb_matches['team1'])
 rcb_matches['rcb_won_toss'] = (rcb_matches['toss_winner'] == 'Royal Challengers Bangalore').astype(int)
 
-# Merge the Kohli feature into our matches dataset using the match ID
 rcb_matches = pd.merge(rcb_matches, kohli_match_scores[['match_id', 'kohli_30_plus']], left_on='id', right_on='match_id', how='left')
-
-# If Virat didn't bat in a specific match, fill the empty value with 0
 rcb_matches['kohli_30_plus'] = rcb_matches['kohli_30_plus'].fillna(0)
 
-# Select the newly upgraded features
-features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city', 'kohli_30_plus']
+
+# --- NEW ENHANCEMENT: HEAD-TO-HEAD WIN RATE ---
+# Sort chronologically so the model doesn't peek into the future
+rcb_matches['date'] = pd.to_datetime(rcb_matches['date'])
+rcb_matches = rcb_matches.sort_values('date')
+
+# Calculate cumulative wins and total matches against each specific opponent prior to the current match
+rcb_matches['wins_vs_opponent'] = rcb_matches.groupby('opponent')['rcb_win'].cumsum().shift(1).fillna(0)
+rcb_matches['matches_vs_opponent'] = rcb_matches.groupby('opponent').cumcount()
+
+# Calculate the win rate (avoiding division by zero for their first-ever encounter)
+rcb_matches['h2h_win_rate'] = rcb_matches['wins_vs_opponent'] / rcb_matches['matches_vs_opponent'].replace(0, 1)
+# ----------------------------------------------
+
+# Select features
+features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city', 'kohli_30_plus', 'h2h_win_rate']
 X = rcb_matches[features].copy().dropna()
 y = rcb_matches.loc[X.index, 'rcb_win']
 
 # 4. TRANSLATE TEXT TO MATH
-X_encoded = pd.get_dummies(X, columns=['opponent', 'toss_decision', 'city'])
+# We use dtype=int here because XGBoost prefers pure integers over boolean True/False values
+X_encoded = pd.get_dummies(X, columns=['opponent', 'toss_decision', 'city'], dtype=int)
 
-# 5. TRAIN AND EVALUATE
+# 5. TRAIN WITH XGBOOST
 X_train, X_test, y_train, y_test = train_test_split(X_encoded, y, test_size=0.2, random_state=42)
 
-model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
+# Initialize XGBoost. Learning rate controls how aggressively it corrects its own mistakes.
+model = XGBClassifier(n_estimators=100, learning_rate=0.1, random_state=42)
 model.fit(X_train, y_train)
 
+# 6. EVALUATE
 predictions = model.predict(X_test)
 
-print("--- RCB Predictor: The Kohli Factor Added ---")
+print("--- RCB Predictor: H2H Added & XGBoost Upgrade ---")
 print(f"Accuracy Score: {accuracy_score(y_test, predictions) * 100:.2f}%\n")
 print("Detailed Report:")
 print(classification_report(y_test, predictions))
