@@ -4,11 +4,10 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, classification_report
 
-# 1. LOAD THE MATCH DATA
+# 1. LOAD THE DATA
 matches_url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
 matches_df = pd.read_csv(matches_url)
 
-# 2. LOAD THE BALL-BY-BALL DATA
 deliveries_url = 'https://raw.githubusercontent.com/genieincodebottle/generative-ai/main/docs/ipl-dataset/deliveries.csv'
 deliveries_df = pd.read_csv(deliveries_url)
 
@@ -18,7 +17,7 @@ kohli_balls = deliveries_df[deliveries_df[batter_col] == 'V Kohli']
 kohli_match_scores = kohli_balls.groupby('match_id')['batsman_runs'].sum().reset_index()
 kohli_match_scores['kohli_30_plus'] = (kohli_match_scores['batsman_runs'] >= 30).astype(int)
 
-# 3. MERGE AND CLEAN THE BASE DATA
+# 2. MERGE AND CLEAN 
 rcb_matches = matches_df[(matches_df['team1'] == 'Royal Challengers Bangalore') | (matches_df['team2'] == 'Royal Challengers Bangalore')].copy()
 rcb_matches = rcb_matches.dropna(subset=['winner'])
 rcb_matches['rcb_win'] = (rcb_matches['winner'] == 'Royal Challengers Bangalore').astype(int)
@@ -26,45 +25,44 @@ rcb_matches['rcb_win'] = (rcb_matches['winner'] == 'Royal Challengers Bangalore'
 rcb_matches['opponent'] = np.where(rcb_matches['team1'] == 'Royal Challengers Bangalore', 
                                    rcb_matches['team2'], 
                                    rcb_matches['team1'])
-rcb_matches['rcb_won_toss'] = (rcb_matches['toss_winner'] == 'Royal Challengers Bangalore').astype(int)
 
 rcb_matches = pd.merge(rcb_matches, kohli_match_scores[['match_id', 'kohli_30_plus']], left_on='id', right_on='match_id', how='left')
 rcb_matches['kohli_30_plus'] = rcb_matches['kohli_30_plus'].fillna(0)
 
-
-# --- NEW ENHANCEMENT: HEAD-TO-HEAD WIN RATE ---
-# Sort chronologically so the model doesn't peek into the future
-rcb_matches['date'] = pd.to_datetime(rcb_matches['date'])
-rcb_matches = rcb_matches.sort_values('date')
-
-# Calculate cumulative wins and total matches against each specific opponent prior to the current match
-rcb_matches['wins_vs_opponent'] = rcb_matches.groupby('opponent')['rcb_win'].cumsum().shift(1).fillna(0)
-rcb_matches['matches_vs_opponent'] = rcb_matches.groupby('opponent').cumcount()
-
-# Calculate the win rate (avoiding division by zero for their first-ever encounter)
-rcb_matches['h2h_win_rate'] = rcb_matches['wins_vs_opponent'] / rcb_matches['matches_vs_opponent'].replace(0, 1)
+# --- NEW ENHANCEMENT: TOSS IMPACT (CHASING) ---
+# Did they bat second (chasing)? 
+# Yes, if they won the toss and chose to field, OR if they lost the toss and the opponent chose to bat.
+rcb_matches['is_chasing'] = np.where(
+    ((rcb_matches['toss_winner'] == 'Royal Challengers Bangalore') & (rcb_matches['toss_decision'] == 'field')) |
+    ((rcb_matches['toss_winner'] != 'Royal Challengers Bangalore') & (rcb_matches['toss_decision'] == 'bat')),
+    1, 0
+)
 # ----------------------------------------------
 
-# Select features
-features = ['opponent', 'rcb_won_toss', 'toss_decision', 'city', 'kohli_30_plus', 'h2h_win_rate']
+# HEAD-TO-HEAD WIN RATE
+rcb_matches['date'] = pd.to_datetime(rcb_matches['date'])
+rcb_matches = rcb_matches.sort_values('date')
+rcb_matches['wins_vs_opponent'] = rcb_matches.groupby('opponent')['rcb_win'].cumsum().shift(1).fillna(0)
+rcb_matches['matches_vs_opponent'] = rcb_matches.groupby('opponent').cumcount()
+rcb_matches['h2h_win_rate'] = rcb_matches['wins_vs_opponent'] / rcb_matches['matches_vs_opponent'].replace(0, 1)
+
+# 3. SELECT STREAMLINED FEATURES
+# We drop the noisy text columns and rely entirely on pure mathematical metrics
+features = ['kohli_30_plus', 'h2h_win_rate', 'is_chasing']
 X = rcb_matches[features].copy().dropna()
 y = rcb_matches.loc[X.index, 'rcb_win']
 
-# 4. TRANSLATE TEXT TO MATH
-# We use dtype=int here because XGBoost prefers pure integers over boolean True/False values
-X_encoded = pd.get_dummies(X, columns=['opponent', 'toss_decision', 'city'], dtype=int)
+# 4. TRAIN WITH XGBOOST
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# 5. TRAIN WITH XGBOOST
-X_train, X_test, y_train, y_test = train_test_split(X_encoded, y, test_size=0.2, random_state=42)
-
-# Initialize XGBoost. Learning rate controls how aggressively it corrects its own mistakes.
-model = XGBClassifier(n_estimators=100, learning_rate=0.1, random_state=42)
+# We adjust max_depth down to 3 since we have fewer features, preventing the model from overcomplicating things
+model = XGBClassifier(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42)
 model.fit(X_train, y_train)
 
-# 6. EVALUATE
+# 5. EVALUATE
 predictions = model.predict(X_test)
 
-print("--- RCB Predictor: H2H Added & XGBoost Upgrade ---")
+print("--- Predictor: Toss Impact & Streamlined Data ---")
 print(f"Accuracy Score: {accuracy_score(y_test, predictions) * 100:.2f}%\n")
 print("Detailed Report:")
 print(classification_report(y_test, predictions))
