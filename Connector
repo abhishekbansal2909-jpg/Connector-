@@ -8,18 +8,11 @@ from sklearn.metrics import accuracy_score, classification_report
 matches_url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
 matches_df = pd.read_csv(matches_url)
 
-# 2. LOAD THE BALL-BY-BALL DATA
-# This dataset contains every single delivery bowled in the tournament
-try:
-    deliveries_url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/deliveries.csv'
-    deliveries_df = pd.read_csv(deliveries_url)
-except:
-    # Public mirror fallback if the primary repository link is unavailable
-    deliveries_url = 'https://media.githubusercontent.com/media/shubh24/indian-premier-league/master/deliveries.csv'
-    deliveries_df = pd.read_csv(deliveries_url)
+# 2. LOAD THE BALL-BY-BALL DATA (Updated Working URL)
+deliveries_url = 'https://raw.githubusercontent.com/genieincodebottle/generative-ai/main/docs/ipl-dataset/deliveries.csv'
+deliveries_df = pd.read_csv(deliveries_url)
 
 # --- THE NEW ENHANCEMENT: THE KOHLI FACTOR ---
-
 # Filter for only the balls faced by Virat Kohli
 kohli_balls = deliveries_df[deliveries_df['batsman'] == 'V Kohli']
 
@@ -28,7 +21,6 @@ kohli_match_scores = kohli_balls.groupby('match_id')['batsman_runs'].sum().reset
 
 # Create our binary feature: 1 if he scored 30 or more, 0 otherwise
 kohli_match_scores['kohli_30_plus'] = (kohli_match_scores['batsman_runs'] >= 30).astype(int)
-
 # ---------------------------------------------
 
 # 3. MERGE AND CLEAN THE DATA
