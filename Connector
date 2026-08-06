@@ -1,41 +1,17 @@
-import yfinance as yf
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
 
-# 1. Fetch Real Market Data 
-# We are pulling 5 years of data for Embassy Office Parks REIT on the NSE
-ticker = yf.Ticker("EMBASSY.NS")
-df = ticker.history(period="5y")
+# 1. Bypass the firewall by having Google's servers pull the CSV directly from a GitHub mirror
+url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
+df = pd.read_csv(url)
 
-# 2. Feature Engineering (Creating the 'X')
-# Raw data isn't always enough. We create a 30-day Simple Moving Average (SMA) 
-# to help the model understand the recent trend.
-df['SMA_30'] = df['Close'].rolling(window=30).mean()
+# 2. Let's verify the data loaded successfully
+print("Data loaded successfully!")
+print(f"Total historical matches downloaded: {df.shape[0]}")
 
-# We must drop the first 30 days because they won't have a moving average to calculate
-df = df.dropna() 
+# 3. Filter the dataset to ONLY include matches where RCB was playing
+rcb_matches = df[(df['team1'] == 'Royal Challengers Bangalore') | (df['team2'] == 'Royal Challengers Bangalore')]
 
-# 3. Define Features (X) and Target (y)
-# Can we predict today's Close price using the Volume and the 30-day trend?
-X = df[['SMA_30', 'Volume']]
-y = df['Close']
+print(f"Total RCB matches found: {rcb_matches.shape[0]}")
 
-# 4. Split the Data
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# 5. Initialize and Train the Model
-model = LinearRegression()
-model.fit(X_train, y_train) 
-
-# 6. Evaluate the Model on historical test data
-predictions = model.predict(X_test)
-print(f"Model R-squared Score: {r2_score(y_test, predictions):.4f}")
-
-# 7. Predict Today's Price
-# We isolate the very last row of our dataset (today's current live data)
-latest_data = X.tail(1)
-predicted_price = model.predict(latest_data)
-
-print(f"Predicted unit price based on current trend and volume: ₹{predicted_price[0]:.2f}")
+# 4. Preview the first 5 rows to see what raw data looks like before we engineer it
+rcb_matches.head()
