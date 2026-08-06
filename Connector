@@ -4,74 +4,61 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, classification_report
 
-# 1. LOAD THE DATA
+# 1. LOAD THE FULL DATASET (No Filters)
 matches_url = 'https://raw.githubusercontent.com/genieincodebottle/aiml-companion/main/projects/ipl-match-predictor/data/raw/matches.csv'
 matches_df = pd.read_csv(matches_url)
 
-deliveries_url = 'https://raw.githubusercontent.com/genieincodebottle/generative-ai/main/docs/ipl-dataset/deliveries.csv'
-deliveries_df = pd.read_csv(deliveries_url)
+# Clean out abandoned matches 
+matches_df = matches_df.dropna(subset=['winner']).copy()
 
-# --- FEATURE ENGINEERING (Streamlined Pipeline) ---
-batter_col = 'batter' if 'batter' in deliveries_df.columns else 'batsman'
-kohli_balls = deliveries_df[deliveries_df[batter_col] == 'V Kohli']
-kohli_match_scores = kohli_balls.groupby('match_id')['batsman_runs'].sum().reset_index()
-kohli_match_scores['kohli_30_plus'] = (kohli_match_scores['batsman_runs'] >= 30).astype(int)
+# 2. GLOBAL FEATURE ENGINEERING 
+# Target: Did Team 1 win? (1 for Yes, 0 for No)
+matches_df['team1_win'] = (matches_df['winner'] == matches_df['team1']).astype(int)
 
-rcb_matches = matches_df[(matches_df['team1'] == 'Royal Challengers Bangalore') | (matches_df['team2'] == 'Royal Challengers Bangalore')].copy()
-rcb_matches = rcb_matches.dropna(subset=['winner'])
-rcb_matches['rcb_win'] = (rcb_matches['winner'] == 'Royal Challengers Bangalore').astype(int)
-
-rcb_matches['opponent'] = np.where(rcb_matches['team1'] == 'Royal Challengers Bangalore', 
-                                   rcb_matches['team2'], 
-                                   rcb_matches['team1'])
-
-rcb_matches = pd.merge(rcb_matches, kohli_match_scores[['match_id', 'kohli_30_plus']], left_on='id', right_on='match_id', how='left')
-rcb_matches['kohli_30_plus'] = rcb_matches['kohli_30_plus'].fillna(0)
-
-rcb_matches['is_chasing'] = np.where(
-    ((rcb_matches['toss_winner'] == 'Royal Challengers Bangalore') & (rcb_matches['toss_decision'] == 'field')) |
-    ((rcb_matches['toss_winner'] != 'Royal Challengers Bangalore') & (rcb_matches['toss_decision'] == 'bat')),
+# Toss Impact: Is Team 1 chasing?
+matches_df['team1_chasing'] = np.where(
+    ((matches_df['toss_winner'] == matches_df['team1']) & (matches_df['toss_decision'] == 'field')) |
+    ((matches_df['toss_winner'] == matches_df['team2']) & (matches_df['toss_decision'] == 'bat')),
     1, 0
 )
 
-rcb_matches['date'] = pd.to_datetime(rcb_matches['date'])
-rcb_matches = rcb_matches.sort_values('date')
-rcb_matches['wins_vs_opponent'] = rcb_matches.groupby('opponent')['rcb_win'].cumsum().shift(1).fillna(0)
-rcb_matches['matches_vs_opponent'] = rcb_matches.groupby('opponent').cumcount()
-rcb_matches['h2h_win_rate'] = rcb_matches['wins_vs_opponent'] / rcb_matches['matches_vs_opponent'].replace(0, 1)
+# Global Head-to-Head Win Rate
+matches_df['date'] = pd.to_datetime(matches_df['date'])
+matches_df = matches_df.sort_values('date')
 
-features = ['kohli_30_plus', 'h2h_win_rate', 'is_chasing']
-X = rcb_matches[features].copy().dropna()
-y = rcb_matches.loc[X.index, 'rcb_win']
+# Create a unique matchup identifier (e.g., "Chennai Super Kings vs Mumbai Indians")
+matches_df['matchup'] = matches_df.apply(lambda row: "-".join(sorted([row['team1'], row['team2']])), axis=1)
 
+# Calculate cumulative wins for Team 1 against Team 2 globally
+matches_df['wins_vs_opponent'] = matches_df.groupby('matchup')['team1_win'].cumsum().shift(1).fillna(0)
+matches_df['matches_vs_opponent'] = matches_df.groupby('matchup').cumcount()
+matches_df['h2h_win_rate'] = matches_df['wins_vs_opponent'] / matches_df['matches_vs_opponent'].replace(0, 1)
+
+# Select Streamlined Global Features
+features = ['team1_chasing', 'h2h_win_rate']
+X = matches_df[features].copy()
+y = matches_df['team1_win']
+
+# 3. TRAIN WITH XGBOOST ON ALL IPL HISTORY
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# --- THE NEW ENHANCEMENT: GRID SEARCH CV ---
-
-# We define a grid of hyperparameters for the machine to test
 param_grid = {
-    'max_depth': [2, 3, 4],
-    'learning_rate': [0.01, 0.05, 0.1],
+    'max_depth': [2, 3, 4, 5],
+    'learning_rate': [0.01, 0.05, 0.1, 0.2],
     'n_estimators': [50, 100, 200]
 }
 
-# Initialize a blank XGBoost model
 base_model = XGBClassifier(random_state=42)
-
-# Initialize the Grid Search
-# cv=5 means it tests each combination on 5 different slices of the data to ensure reliability
 grid_search = GridSearchCV(estimator=base_model, param_grid=param_grid, cv=5, scoring='accuracy', n_jobs=-1)
 
-print("Starting Grid Search... testing 27 different model configurations...")
+print("Starting Global Grid Search across all IPL matches...")
 grid_search.fit(X_train, y_train)
 
-# The grid search automatically saves the best performing model
 best_model = grid_search.best_estimator_
-
-# Evaluate the winning model
 predictions = best_model.predict(X_test)
 
-print("\n--- Grid Search Complete ---")
+# 4. EVALUATE
+print("\n--- Global IPL Predictor Optimized ---")
 print(f"The Best Hyperparameters Found: {grid_search.best_params_}")
 print(f"\nFinal Optimized Accuracy Score: {accuracy_score(y_test, predictions) * 100:.2f}%\n")
 print("Detailed Report:")
